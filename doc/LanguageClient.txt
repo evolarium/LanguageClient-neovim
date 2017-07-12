@@ -138,6 +138,13 @@ List used to fill diagnostic messages.
 Default: "quickfix"
 Valid options: "quickfix" | "location" | ""
 
+2.9 g:LanguageClient_diagnosticsEnable    *g:LanguageClient_diagnosticsEnable*
+
+Set if diagnostics integration is enabled.
+
+Default: 1
+Valid options: 1 | 0
+
 ==============================================================================
 3. Commands                                           *LanguageClientCommands*
 
@@ -213,6 +220,11 @@ Set the plugin logging level. By default, only errors are logged into
 /tmp/LanguageClient.log.
 
 Valid logging levels are 'ERROR'(default), 'INFO', 'DEBUG'.
+
+4.9 LanguageClient_textDocument_formatting()
+*LanguageClient_textDocument_formatting*
+
+Format current document.
 
 ==============================================================================
 5. License                                             *LanguageClientLicense*
