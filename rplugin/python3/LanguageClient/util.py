@@ -127,7 +127,7 @@ def getCommandUpdateSigns(signs: List[Sign], nextSigns: List[Sign]) -> str:
         if op == "replace":
             for i in range(i1, i2):
                 cmd += getCommandDeleteSign(signs[i])
-                sameLine = filter(signs[i + 1:], lambda sign: sign.line == signs[i].line)
+                sameLine = list(filter(signs[i + 1:], lambda sign: sign.line == signs[i].line))
                 for sign in sameLine[:1]:
                     cmd += getCommandAddSign(sign)
             for i in range(j1, j2):
@@ -135,7 +135,7 @@ def getCommandUpdateSigns(signs: List[Sign], nextSigns: List[Sign]) -> str:
         elif op == "delete":
             for i in range(i1, i2):
                 cmd += getCommandDeleteSign(signs[i])
-                sameLine = filter(signs[i + 1:], lambda sign: sign.line == signs[i].line)
+                sameLine = list(filter(signs[i + 1:], lambda sign: sign.line == signs[i].line))
                 for sign in sameLine[:1]:
                     cmd += getCommandAddSign(sign)
         elif op == "insert":
