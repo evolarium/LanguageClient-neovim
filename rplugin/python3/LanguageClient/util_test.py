@@ -1,13 +1,15 @@
 from . util import (
     joinPath, getRootPath, pathToURI, uriToPath, escape,
     getGotoFileCommand,
-    getCommandAddSign, getCommandDeleteSign, getCommandUpdateSigns)
+    getCommandAddSign, getCommandDeleteSign, getCommandUpdateSigns,
+    convertVimCommandArgsToKwargs, apply_TextEdit)
 from . Sign import Sign
 
 
 def test_getRootPath():
     assert (getRootPath(joinPath("tests/sample-rs/src/main.rs"), "rust") ==
             joinPath("tests/sample-rs"))
+    assert (getRootPath("does/not/exists", "") == "does/not")
 
 
 def test_pathToURI():
@@ -19,9 +21,14 @@ def test_pathToURIRelative():
     assert pathToURI(".") is None
 
 
-def testUriToPath():
+def test_uriToPath():
     assert (uriToPath("file:///tmp/sample-rs/src/main.rs") ==
             "/tmp/sample-rs/src/main.rs")
+
+
+def test_uriToPath_quoted():
+    assert (uriToPath("file:///tmp/node_modules/%40types/node/index.d.ts") ==
+            "/tmp/node_modules/@types/node/index.d.ts")
 
 
 def test_escape():
@@ -29,15 +36,15 @@ def test_escape():
 
 
 def test_getGotoFileCommand():
-    assert getGotoFileCommand("/tmp/sample", [
-        "/tmp/sample",
+    assert getGotoFileCommand("/tmp/+some str%nge|name", [
+        "/tmp/+some str%nge|name",
         "/tmp/somethingelse"
-    ]) == "buffer /tmp/sample"
+    ]) == "exe 'buffer ' . fnameescape('/tmp/+some str%nge|name')"
 
-    assert getGotoFileCommand("/tmp/sample", [
+    assert getGotoFileCommand("/tmp/+some str%nge|name", [
         "/tmp/notsample",
         "/tmp/somethingelse"
-    ]) == "edit /tmp/sample"
+    ]) == "exe 'edit ' . fnameescape('/tmp/+some str%nge|name')"
 
 
 def test_getCommandDeleteSign():
@@ -65,3 +72,42 @@ def test_getCommandUpdateSigns():
     assert (getCommandUpdateSigns(signs, nextSigns) ==
             "echo | execute('sign place 2 line=2"
             " name=LanguageClientError buffer=1')")
+
+
+def test_convertVimCommandArgsToKwargs():
+    assert convertVimCommandArgsToKwargs(["rootPath=/tmp"]) == {
+        "rootPath": "/tmp"
+    }
+
+    assert convertVimCommandArgsToKwargs([]) == {}
+
+    assert convertVimCommandArgsToKwargs(None) == {}
+
+
+def test_apply_TextEdit():
+    text = """fn main() {
+0;
+}
+""".split("\n")
+    expectedText = """fn main() {
+    0;
+}
+""".split("\n")
+    newText = """fn main() {
+    0;
+}
+"""
+    textEdit = {
+        "range": {
+            "start": {
+                "line": 0,
+                "character": 0,
+            },
+            "end": {
+                "line": 3,
+                "character": 0,
+            },
+        },
+        "newText": newText,
+    }
+    assert apply_TextEdit(text, textEdit) == expectedText

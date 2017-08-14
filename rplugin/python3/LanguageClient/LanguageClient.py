@@ -4,12 +4,14 @@ import subprocess
 import json
 import inspect
 import threading
+import linecache
 from functools import partial
 from typing import List, Dict, Union, Any  # noqa: F401
 
 from . util import (
     getRootPath, pathToURI, uriToPath, escape,
-    getGotoFileCommand, getCommandUpdateSigns)
+    getGotoFileCommand, getCommandUpdateSigns,
+    convertVimCommandArgsToKwargs, apply_TextEdit)
 from . logger import logger
 from . RPC import RPC
 from . TextDocumentItem import TextDocumentItem
@@ -58,7 +60,7 @@ class LanguageClient:
         self.server = {}  # type: Dict[str, subprocess.Popen]
         self.rpc = {}  # type: Dict[str, RPC]
         self.capabilities = {}
-        self.rootUri = None
+        self.rootUri = {}
         self.textDocuments = {}  # type: Dict[str, TextDocumentItem]
         self.diagnostics = {}
         self.lastLine = -1
@@ -75,6 +77,16 @@ class LanguageClient:
         if self.nvim.current.buffer.options['endofline']:
             text += "\n"
         return text
+
+    def getFileLine(self, filepath: str, line: int) -> str:
+        modifiedBuffers = (buffer for buffer in self.nvim.buffers if buffer.options["mod"])
+        modifiedBuffer = next((buffer for buffer in modifiedBuffers if buffer.name == filepath), None)
+        if modifiedBuffer != None:
+            lineContent = modifiedBuffer[line - 1]
+            if not(line == len(modifiedBuffer) and not modifiedBuffer.options['endofline']):
+                lineContent += "\n"
+            return lineContent
+        return linecache.getline(filepath, line)
 
     def asyncCommand(self, cmds: str) -> None:
         self.nvim.async_call(self.nvim.command, cmds)
@@ -212,8 +224,8 @@ class LanguageClient:
         serverCommands = args[0]  # Dict[str, str]
         self.serverCommands.update(serverCommands)
 
-    @neovim.command("LanguageClientStart")
-    def start(self, warn=True) -> None:
+    @neovim.command("LanguageClientStart", nargs="*", range="")
+    def start(self, args=None, range=None, warn=True) -> None:
         # Sync settings.
         self.serverCommands.update(self.nvim.vars.get(
             "LanguageClient_serverCommands", {}))
@@ -279,9 +291,13 @@ class LanguageClient:
         if len(self.server) == 1:
             self.defineSigns()
 
+        kwargs = convertVimCommandArgsToKwargs(args)
+        rootPath = kwargs.get("rootPath")
+        # TODO: possibly expand special variables like '%:h'
+
         logger.info("End LanguageClientStart")
 
-        self.initialize(languageId=languageId)
+        self.initialize(rootPath=rootPath, languageId=languageId)
 
     @neovim.command("LanguageClientStop")
     @args()
@@ -298,14 +314,14 @@ class LanguageClient:
         if rootPath is None:
             rootPath = getRootPath(self.nvim.current.buffer.name, languageId)
         logger.info("rootPath: " + rootPath)
-        self.rootUri = pathToURI(rootPath)
+        self.rootUri[languageId] = pathToURI(rootPath)
         if cbs is None:
             cbs = [self.handleInitializeResponse, self.handleError]
 
         self.rpc[languageId].call("initialize", {
             "processId": os.getpid(),
             "rootPath": rootPath,
-            "rootUri": self.rootUri,
+            "rootUri": self.rootUri[languageId],
             "capabilities": {},
             "trace": self.trace,
         }, cbs)
@@ -323,7 +339,7 @@ class LanguageClient:
 
         trigger_patterns = []
         for c in completionProvider.get("triggerCharacters", []):
-            trigger_patterns.append(re.escape(c) + '$')
+            trigger_patterns.append(re.escape(c))
 
         try:
             self.nvim.call('cm#register_source', dict(
@@ -340,11 +356,23 @@ class LanguageClient:
 
     @neovim.autocmd("BufReadPost", pattern="*")
     def handleBufReadPost(self):
-        languageId, = self.getArgs(["languageId"])
+        logger.info("Begin handleBufReadPost")
+
+        languageId, uri = self.getArgs(["languageId", "uri"])
+        if not uri:
+            return
+        if (self.rootUri.get(languageId)
+                and not uri.startswith(self.rootUri[languageId])):
+            return
+        if uri in self.textDocuments:
+            return
+
         if self.alive(languageId, warn=False):
             self.textDocument_didOpen()
         elif self.autoStart:
             self.start(warn=False)
+
+        logger.info("End handleBufReadPost")
 
     @neovim.autocmd("VimEnter", pattern="*")
     def handleVimEnter(self):
@@ -361,7 +389,7 @@ class LanguageClient:
                    " buffer={}").format(bufnumber)
             self.asyncCommand(cmd)
 
-        logger.info("textDocument/didOpen")
+        logger.info("Begin textDocument/didOpen")
 
         text = self.currentBufferText()
 
@@ -376,6 +404,8 @@ class LanguageClient:
                 "text": textDocumentItem.text,
             }
         })
+
+        logger.info("End textDocument/didOpen")
 
     @neovim.function("LanguageClient_textDocument_didClose")
     @args(warn=False)
@@ -476,6 +506,10 @@ class LanguageClient:
             defn = result[0]
         else:
             defn = result
+        if not defn["uri"].startswith("file:///"):
+            self.asyncEcho(
+                "{}:{}".format(defn["uri"], defn["range"]["start"]["line"]))
+            return
         path = uriToPath(defn["uri"])
         cmd = getGotoFileCommand(path, bufnames)
         line = defn["range"]["start"]["line"] + 1
@@ -605,18 +639,19 @@ call fzf#run(fzf#wrap({{
         if query is None:
             query = ""
         if not sync and not cbs:
-            cbs = [self.handleWorkspaceSymbolResponse,
+            cbs = [partial(self.handleWorkspaceSymbolResponse,
+                           languageId=languageId),
                    self.handleError]
 
         return self.rpc[languageId].call("workspace/symbol", {
             "query": query
         }, cbs)
 
-    def handleWorkspaceSymbolResponse(self, symbols: list) -> None:
+    def handleWorkspaceSymbolResponse(self, symbols: list, languageId: str) -> None:
         if self.selectionUI == "fzf":
             source = []
             for sb in symbols:
-                path = os.path.relpath(sb["location"]["uri"], self.rootUri)
+                path = os.path.relpath(sb["location"]["uri"], self.rootUri[languageId])
                 start = sb["location"]["range"]["start"]
                 line = start["line"] + 1
                 character = start["character"] + 1
@@ -649,10 +684,10 @@ call fzf#run(fzf#wrap({{
 
     @neovim.function("LanguageClient_FZFSinkWorkspaceSymbol")
     def fzfSinkWorkspaceSymbol(self, args: List):
-        bufnames, = self.getArgs(["bufnames"])
+        bufnames, languageId = self.getArgs(["bufnames", "languageId"])
 
         splitted = args[0].split(":")
-        path = uriToPath(os.path.join(self.rootUri, splitted[0]))
+        path = uriToPath(os.path.join(self.rootUri[languageId], splitted[0]))
         line = splitted[1]
         character = splitted[2]
 
@@ -670,7 +705,8 @@ call fzf#run(fzf#wrap({{
         self.textDocument_didChange()
 
         if not sync and not cbs:
-            cbs = [self.handleTextDocumentReferencesResponse,
+            cbs = [partial(self.handleTextDocumentReferencesResponse,
+                           languageId=languageId),
                    self.handleError]
 
         return self.rpc[languageId].call("textDocument/references", {
@@ -686,31 +722,39 @@ call fzf#run(fzf#wrap({{
             },
         }, cbs)
 
-    def handleTextDocumentReferencesResponse(self, locations: List) -> None:
+    def handleTextDocumentReferencesResponse(self, locations: List, languageId: str) -> None:
+        logger.error("Handling response")
         if self.selectionUI == "fzf":
-            source = []  # type: List[str]
-            for loc in locations:
-                path = os.path.relpath(loc["uri"], self.rootUri)
-                start = loc["range"]["start"]
-                line = start["line"] + 1
-                character = start["character"] + 1
-                entry = "{}:{}:{}".format(path, line, character)
-                source.append(entry)
-            self.fzf(source, "LanguageClient#FZFSinkTextDocumentReferences")
+            def setLocationsList():
+                source = []  # type: List[str]
+                for loc in locations:
+                    path = os.path.relpath(loc["uri"], self.rootUri[languageId])
+                    start = loc["range"]["start"]
+                    line = start["line"] + 1
+                    character = start["character"] + 1
+                    text = self.getFileLine(uriToPath(loc["uri"]), line).strip()
+                    entry = "{}:{}:{}: {}".format(path, line, character, text)
+                    source.append(entry)
+                self.fzf(source, "LanguageClient#FZFSinkTextDocumentReferences")
+            self.nvim.async_call(setLocationsList)
         elif self.selectionUI == "location-list":
-            loclist = []
-            for loc in locations:
-                path = uriToPath(loc["uri"])
-                start = loc["range"]["start"]
-                line = start["line"] + 1
-                character = start["character"] + 1
-                loclist.append({
-                    "filename": path,
-                    "lnum": line,
-                    "col": character
-                })
-            self.nvim.async_call(self.setloclist, loclist)
-            self.asyncEcho("References populated to location list.")
+            def setLocationsList():
+                loclist = []
+                for loc in locations:
+                    path = uriToPath(loc["uri"])
+                    start = loc["range"]["start"]
+                    line = start["line"] + 1
+                    character = start["character"] + 1
+                    text = self.getFileLine(path, line)
+                    loclist.append({
+                        "filename": path,
+                        "lnum": line,
+                        "col": character,
+                        "text": text
+                    })
+                self.nvim.async_call(self.setloclist, loclist)
+                self.asyncEcho("References populated to location list.")
+            self.nvim.async_call(setLocationsList)
         else:
             msg = "No selection UI found. Consider install fzf or denite.vim."
             self.asyncEcho(msg)
@@ -719,10 +763,10 @@ call fzf#run(fzf#wrap({{
 
     @neovim.function("LanguageClient_FZFSinkTextDocumentReferences")
     def fzfSinkTextDocumentReferences(self, args: List) -> None:
-        bufnames, = self.getArgs(["bufnames"])
+        bufnames, languageId = self.getArgs(["bufnames", "languageId"])
 
         splitted = args[0].split(":")
-        path = uriToPath(os.path.join(self.rootUri, splitted[0]))
+        path = uriToPath(os.path.join(self.rootUri[languageId], splitted[0]))
         line = splitted[1]
         character = splitted[2]
 
@@ -730,23 +774,21 @@ call fzf#run(fzf#wrap({{
         cmd += "| normal! {}G{}|".format(line, character)
         self.asyncCommand(cmd)
 
-    @neovim.autocmd("TextChanged", pattern="*")
-    def textDocument_autocmdTextChanged(self):
-        uri = pathToURI(self.nvim.current.buffer.name)
-        if uri and uri in self.textDocuments:
-            text_doc = self.textDocuments[uri]
-            if text_doc.skip_change(self.changeThreshold):
-                return
+    @neovim.autocmd("TextChanged", pattern="*",
+                    eval='fnamemodify(expand("<afile>"), ":p")')
+    def handleTextChanged(self, filename) -> None:
+        uri = pathToURI(filename)
+        if not uri or uri not in self.textDocuments:
+            return
+        text_doc = self.textDocuments[uri]
+        if text_doc.skip_change(self.changeThreshold):
+            return
         self.textDocument_didChange()
 
-    @neovim.autocmd("TextChangedI", pattern="*")
-    def textDocument_autocmdTextChangedI(self):
-        uri = pathToURI(self.nvim.current.buffer.name)
-        if uri and uri in self.textDocuments:
-            text_doc = self.textDocuments[uri]
-            if text_doc.skip_change(self.changeThreshold):
-                return
-        self.textDocument_didChange()
+    @neovim.autocmd("TextChangedI", pattern="*",
+                    eval='fnamemodify(expand("<afile>"), ":p")')
+    def handleTextChangedI(self, filename):
+        self.handleTextChanged(filename)
 
     @args(warn=False)
     def textDocument_didChange(self, uri: str, languageId: str) -> None:
@@ -1074,14 +1116,55 @@ call fzf#run(fzf#wrap({{
 
     def handleTextDocumentFormatting(
             self, textEdits: List, curPos: Dict, bufnames: List[str]) -> None:
-        assert len(textEdits) == 1
-        newText = textEdits[0]["newText"]
 
-        def setBufferContent(newText):
-            self.nvim.current.buffer[:] = newText.split("\n")
+        def updateBufferContent():
+            text = self.nvim.current.buffer[:]
+            for textEdit in textEdits:
+                text = apply_TextEdit(text, textEdit)
+            self.nvim.current.buffer[:] = text
 
-        self.nvim.async_call(setBufferContent, newText)
+        self.nvim.async_call(updateBufferContent)
         logger.info("End textDocument/formatting")
+
+    @neovim.function("LanguageClient_textDocument_rangeFormatting")
+    @args()
+    def textDocument_rangeFormatting(
+            self, languageId: str, uri: str, line: int, character: int,
+            bufnames: List[str], cbs: List) -> None:
+        logger.info("Begin textDocument/rangeFormatting")
+
+        self.textDocument_didChange()
+
+        if cbs is None:
+            cbs = [partial(self.handleTextDocumentFormatting,
+                           curPos={
+                               "line": line,
+                               "character": character,
+                               "uri": uri,
+                           },
+                           bufnames=bufnames),
+                   self.handleError]
+
+        options = {
+            "tabSize": self.nvim.options["tabstop"],
+            "insertSpaces": self.nvim.options["expandtab"],
+        }
+
+        start_line = self.nvim.eval('v:lnum') - 1
+        end_line = start_line + self.nvim.eval('v:count')
+        end_char = len(self.nvim.current.buffer[end_line]) - 1
+        textRange = {
+            "start": {"line": start_line, "character": 0},
+            "end": {"line": end_line, "character": end_char},
+        }
+
+        self.rpc[languageId].call("textDocument/rangeFormatting", {
+            "textDocument": {
+                "uri": uri,
+            },
+            "range": textRange,
+            "options": options,
+        }, cbs)
 
     def telemetry_event(self, params: Dict) -> None:
         if params.get("type") == "log":
@@ -1114,3 +1197,4 @@ call fzf#run(fzf#wrap({{
 
     def handleError(self, message) -> None:
         self.asyncEcho(json.dumps(message))
+

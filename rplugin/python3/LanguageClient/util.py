@@ -4,7 +4,7 @@ import glob
 import difflib
 from urllib import parse
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Callable
 from . logger import logger
 from . Sign import Sign
 
@@ -38,6 +38,16 @@ def getRootPath(filepath: str, languageId: str) -> str:
         rootPath = traverseUp(filepath, isDotnetRoot)
     elif languageId == "java":
         rootPath = traverseUp(filepath, isJavaRoot)
+    elif languageId == "haskell":
+        rootPath = (traverseUp(
+                        filepath,
+                        lambda folder: 
+                            os.path.exists(os.path.join(folder, "stack.yaml"))) or 
+                    traverseUp( 
+                        filepath,
+                        lambda folder: 
+                            os.path.exists(os.path.join(folder, ".cabal"))))
+
     # TODO: detect for other filetypes
     if not rootPath:
         rootPath = traverseUp(
@@ -53,13 +63,15 @@ def getRootPath(filepath: str, languageId: str) -> str:
     return rootPath
 
 
-def traverseUp(folder: str, stop) -> str:
-    if stop(folder):
+def traverseUp(folder: str, predicate: Callable[[str], str]) -> str:
+    if predicate(folder):
         return folder
-    elif folder == "/":
+
+    next_folder = os.path.dirname(folder)
+    if next_folder == folder:  # Prevent infinite loop.
         return None
     else:
-        return traverseUp(os.path.dirname(folder), stop)
+        return traverseUp(next_folder, predicate)
 
 
 def isDotnetRoot(folder: str) -> bool:
@@ -81,7 +93,6 @@ def isJavaRoot(folder: str) -> bool:
 
     return False
 
-
 def pathToURI(filepath: str) -> str:
     if not os.path.isabs(filepath):
         return None
@@ -89,7 +100,7 @@ def pathToURI(filepath: str) -> str:
 
 
 def uriToPath(uri: str) -> str:
-    return parse.urlparse(uri).path
+    return parse.unquote(parse.urlparse(uri).path)
 
 
 def escape(string: str) -> str:
@@ -105,9 +116,9 @@ def retry(span, count, condition):
 
 def getGotoFileCommand(path, bufnames) -> str:
     if path in bufnames:
-        return "buffer {}".format(path)
+        return "exe 'buffer ' . fnameescape('{}')".format(path)
     else:
-        return "edit {}".format(path)
+        return "exe 'edit ' . fnameescape('{}')".format(path)
 
 
 def getCommandDeleteSign(sign: Sign) -> str:
@@ -148,3 +159,30 @@ def getCommandUpdateSigns(signs: List[Sign], nextSigns: List[Sign]) -> str:
             logger.error(msg)
 
     return cmd
+
+
+def convertVimCommandArgsToKwargs(args: List[str]) -> Dict:
+    kwargs = {}
+    if args:
+        for arg in args:
+            argarr = arg.split("=")
+            if len(argarr) != 2:
+                logger.warn("Parse vim command arg failed: " + arg)
+                continue
+            kwargs[argarr[0]] = argarr[1]
+    return kwargs
+
+
+def apply_TextEdit(textList: List[str], textEdit) -> List[str]:
+    startLine = textEdit["range"]["start"]["line"]
+    startCharacter = textEdit["range"]["start"]["character"]
+    endLine = textEdit["range"]["end"]["line"]
+    endCharacter = textEdit["range"]["end"]["character"]
+    newText = textEdit["newText"]
+
+    text = "".join(textList)
+    startIndex = (sum(map(len, textList[:startLine])) + startLine +
+                  startCharacter)
+    endIndex = sum(map(len, textList[:endLine])) + endLine + endCharacter
+    text = text[:startIndex] + newText + text[endIndex + 1:]
+    return text.split("\n")
