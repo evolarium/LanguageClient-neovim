@@ -299,12 +299,17 @@ class LanguageClient:
 
         self.initialize(rootPath=rootPath, languageId=languageId)
 
+        if self.nvim.call("exists", "#User#LanguageClientStarted") == 1:
+            self.nvim.command("doautocmd User LanguageClientStarted")
+
     @neovim.command("LanguageClientStop")
     @args()
     def stop(self, languageId: str) -> None:
         self.rpc[languageId].run = False
-        self.exit(languageId)
+        self.exit(languageId=languageId)
         del self.server[languageId]
+        if self.nvim.call("exists", "#User#LanguageClientStopped") == 1:
+            self.nvim.command("doautocmd User LanguageClientStopped")
 
     @neovim.function("LanguageClient_initialize")
     @args()
@@ -381,14 +386,6 @@ class LanguageClient:
 
     @args()
     def textDocument_didOpen(self, uri: str, languageId: str) -> None:
-        # Keep sign column open.
-        if self.nvim.vars.get("LanguageClient_signColumnAlwaysOn", True):
-            bufnumber = self.nvim.current.buffer.number
-            cmd = ("sign place 99999"
-                   " line=99999 name=LanguageClientDummy"
-                   " buffer={}").format(bufnumber)
-            self.asyncCommand(cmd)
-
         logger.info("Begin textDocument/didOpen")
 
         text = self.currentBufferText()
@@ -981,11 +978,9 @@ call fzf#run(fzf#wrap({{
         self.asyncCommand(cmd)
 
         if self.diagnosticsList == "quickfix":
-            self.nvim.funcs.setqflist(
-                qflist, "r", "LanguageClient-diagnostics")
+            self.nvim.funcs.setqflist(qflist, "r")
         elif self.diagnosticsList == "location":
-            self.nvim.funcs.setloclist(
-                0, qflist, "r", "LanguageClient-diagnostics")
+            self.nvim.funcs.setloclist(0, qflist, "r")
 
     @neovim.autocmd("CursorMoved", pattern="*", eval="line('.')")
     def handleCursorMoved(self, line) -> None:
@@ -1165,6 +1160,12 @@ call fzf#run(fzf#wrap({{
             "range": textRange,
             "options": options,
         }, cbs)
+
+    @neovim.function("LanguageClient_notify")
+    def notify(self, args: List) -> None:
+        languageId, = self.getArgs(["languageId"])
+
+        self.rpc[languageId].notify(args[0], args[1])
 
     def telemetry_event(self, params: Dict) -> None:
         if params.get("type") == "log":
