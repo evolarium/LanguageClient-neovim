@@ -36,16 +36,26 @@ def args(warn=True):
 
 
 def convert_lsp_completion_item_to_vim_style(item):
+    insertText = item.get('insertText', "") or ""
+    label = item['label']
+    insertTextFormat = item.get('insertTextFormat', 1)
+
     e = {}
     e['icase'] = 1
     # insertText:
     # A string that should be inserted a document when selecting
     # this completion. When `falsy` the label is used.
-    e['word'] = item.get('insertText', "") or item['label']
-    e['abbr'] = item['label']
+    e['word'] = insertText or label
+    e['abbr'] = label
     e['dup'] = 1
     e['menu'] = item.get('detail', "")
     e['info'] = item.get('documentation', "")
+
+    # snippet injection is supported by nvim-completion-manager
+    if insertTextFormat == 2:
+        e['word'] = label
+        e['snippet'] = insertText
+
     return e
 
 
@@ -69,6 +79,8 @@ class LanguageClient:
         self.serverCommands = {}
         self.changeThreshold = 0
         self.trace = "off"  # trace settings passed to server
+        self.languageServerLogFilePath = os.path.join(
+                os.getenv("TMP", "/tmp"), "LanguageServer.log")
         self.autoStart = self.nvim.vars.get(
             "LanguageClient_autoStart", False)
 
@@ -79,14 +91,14 @@ class LanguageClient:
         return text
 
     def getFileLine(self, filepath: str, line: int) -> str:
-        modifiedBuffers = (buffer for buffer in self.nvim.buffers if buffer.options["mod"])
-        modifiedBuffer = next((buffer for buffer in modifiedBuffers if buffer.name == filepath), None)
-        if modifiedBuffer != None:
-            lineContent = modifiedBuffer[line - 1]
-            if not(line == len(modifiedBuffer) and not modifiedBuffer.options['endofline']):
-                lineContent += "\n"
-            return lineContent
-        return linecache.getline(filepath, line)
+        modifiedBuffers = [buffer for buffer in self.nvim.buffers
+                           if buffer.name == filepath
+                           and buffer.options["mod"]]
+
+        if len(modifiedBuffers) == 0:
+            return linecache.getline(filepath, line).strip()
+        else:
+            return modifiedBuffers[0][line - 1]
 
     def asyncCommand(self, cmds: str) -> None:
         self.nvim.async_call(self.nvim.command, cmds)
@@ -150,27 +162,52 @@ class LanguageClient:
 
         return [res[k] for k in keys]
 
-    def applyChanges(
-            self, changes: Dict,
-            curPos: Dict, bufnames: List) -> None:
+    def apply_TextDocumentEdit(self, textDocumentEdit: Dict) -> None:
         """
-        Only suitable for changes of word. Not for paragraph etc.
+        Apply a TextDocumentEdit.
         """
-        cmd = "echo ''"
-        for uri, edits in changes.items():
-            path = uriToPath(uri)
-            cmd += "| " + getGotoFileCommand(path, bufnames)
-            for edit in edits:
-                line = edit["range"]["start"]["line"] + 1
-                character = edit["range"]["start"]["character"] + 1
-                newText = edit["newText"]
-                cmd += "| execute 'normal! {}G{}|cw{}'".format(
-                    line, character, newText)
-        cmd += "| buffer {} | normal! {}G{}|".format(
+        filename = uriToPath(textDocumentEdit["textDocument"]["uri"])
+        edits = textDocumentEdit["edits"]
+        # Sort edits. Make edits from right to left, bottom to top.
+        edits = sorted(edits, key=lambda edit: (
+            -1 * edit["range"]["start"]["character"],
+            -1 * edit["range"]["start"]["line"],
+        ))
+        buffer = next((buffer for buffer in self.nvim.buffers
+                       if buffer.name == filename), None)
+        # Open file if needed.
+        if buffer is None:
+            self.nvim.command(
+                "exe 'edit ' . fnameescape('{}')".format(filename))
+            buffer = next((buffer for buffer in self.nvim.buffers
+                           if buffer.name == filename), None)
+        text = buffer[:]
+        for edit in edits:
+            text = apply_TextEdit(text, edit)
+        buffer[:] = text
+
+    def apply_WorkspaceEdit(self, workspaceEdit: Dict) -> None:
+        """
+        Apply a WorkspaceEdit.
+        """
+        if workspaceEdit.get("documentChanges") is not None:
+            for textDocumentEdit in workspaceEdit.get("documentChanges"):
+                self.apply_TextDocumentEdit(textDocumentEdit)
+        else:
+            for (uri, edits) in workspaceEdit["changes"].items():
+                textDocumentEdit = {
+                    "textDocument": {
+                        "uri": uri,
+                    },
+                    "edits": edits,
+                }
+                self.apply_TextDocumentEdit(textDocumentEdit)
+
+    def restore_cursor(self, curPos: Dict) -> None:
+        cmd = "buffer {} | normal! {}G{}|".format(
             uriToPath(curPos["uri"]),
             curPos["line"] + 1,
             curPos["character"] + 1)
-        # logger.info(cmd)
         self.asyncCommand(cmd)
 
     @neovim.function("LanguageClient_alive", sync=True)
@@ -185,8 +222,8 @@ class LanguageClient:
             msg = "Language client is not running. Try :LanguageClientStart"
         elif self.server[languageId].poll() is not None:
             ret = False
-            msg = "Failed to start language server: {}".format(
-                self.server[languageId].stderr.readlines())
+            msg = ("Failed to start language server."
+                   " See {}").format(self.languageServerLogFilePath)
             logger.error(msg)
 
         if ret is False and warn:
@@ -213,7 +250,6 @@ class LanguageClient:
             signTexthl = level["signTexthl"]
             cmd += ("| execute 'sign define LanguageClient{}"
                     " text={} texthl={}'").format(name, signText, signTexthl)
-        cmd += ("| execute 'sign define LanguageClientDummy'")
         self.asyncCommand(cmd)
 
     @neovim.function("LanguageClient_registerServerCommands")
@@ -272,7 +308,7 @@ class LanguageClient:
                 command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE)
+                stderr=open(self.languageServerLogFilePath, "wb"))
         except Exception as ex:
             msg = "Failed to start language server: " + ex.args[1]
             logger.exception(msg)
@@ -453,12 +489,11 @@ class LanguageClient:
         if contents is None:
             contents = ""
 
-        value = ""
         if isinstance(contents, list):
-            for markedString in contents:
-                value += self.markedStringToString(markedString)
+            value = str.join("\n", [self.markedStringToString(s)
+                                    for s in contents])
         else:
-            value += self.markedStringToString(contents)
+            value = self.markedStringToString(contents)
         self.asyncEcho(value)
 
         logger.info("End textDocument/hover")
@@ -520,7 +555,7 @@ class LanguageClient:
     @args()
     def textDocument_rename(
             self, uri: str, languageId: str, line: int, character: int,
-            cword: str, newName: str, bufnames: List[str], cbs: List) -> None:
+            cword: str, newName: str, cbs: List) -> None:
         logger.info("Begin textDocument/rename")
 
         self.textDocument_didChange()
@@ -534,8 +569,7 @@ class LanguageClient:
                            curPos={
                                "line": line,
                                "character": character,
-                               "uri": uri},
-                           bufnames=bufnames),
+                               "uri": uri}),
                    self.handleError]
 
         self.rpc[languageId].call("textDocument/rename", {
@@ -550,11 +584,13 @@ class LanguageClient:
         }, cbs)
 
     def handleTextDocumentRenameResponse(
-            self, result: Dict,
-            curPos: Dict, bufnames: List) -> None:
-        changes = result["changes"]
-        self.applyChanges(changes, curPos, bufnames)
-        logger.info("End textDocument/rename")
+            self, workspaceEdit: Dict, curPos: Dict) -> None:
+        def apply():
+            self.apply_WorkspaceEdit(workspaceEdit),
+            self.restore_cursor(curPos),
+            logger.info("End textDocument/rename"),
+
+        self.nvim.async_call(apply)
 
     @neovim.function("LanguageClient_textDocument_documentSymbol")
     @args()
@@ -644,11 +680,13 @@ call fzf#run(fzf#wrap({{
             "query": query
         }, cbs)
 
-    def handleWorkspaceSymbolResponse(self, symbols: list, languageId: str) -> None:
+    def handleWorkspaceSymbolResponse(
+            self, symbols: list, languageId: str) -> None:
         if self.selectionUI == "fzf":
             source = []
             for sb in symbols:
-                path = os.path.relpath(sb["location"]["uri"], self.rootUri[languageId])
+                path = os.path.relpath(sb["location"]["uri"],
+                                       self.rootUri[languageId])
                 start = sb["location"]["range"]["start"]
                 line = start["line"] + 1
                 character = start["character"] + 1
@@ -719,20 +757,23 @@ call fzf#run(fzf#wrap({{
             },
         }, cbs)
 
-    def handleTextDocumentReferencesResponse(self, locations: List, languageId: str) -> None:
+    def handleTextDocumentReferencesResponse(
+            self, locations: List, languageId: str) -> None:
         logger.error("Handling response")
         if self.selectionUI == "fzf":
             def setLocationsList():
                 source = []  # type: List[str]
                 for loc in locations:
-                    path = os.path.relpath(loc["uri"], self.rootUri[languageId])
+                    path = os.path.relpath(loc["uri"],
+                                           self.rootUri[languageId])
                     start = loc["range"]["start"]
                     line = start["line"] + 1
                     character = start["character"] + 1
-                    text = self.getFileLine(uriToPath(loc["uri"]), line).strip()
+                    text = self.getFileLine(uriToPath(loc["uri"]), line)
                     entry = "{}:{}:{}: {}".format(path, line, character, text)
                     source.append(entry)
-                self.fzf(source, "LanguageClient#FZFSinkTextDocumentReferences")
+                self.fzf(source,
+                         "LanguageClient#FZFSinkTextDocumentReferences")
             self.nvim.async_call(setLocationsList)
         elif self.selectionUI == "location-list":
             def setLocationsList():
@@ -795,6 +836,7 @@ call fzf#run(fzf#wrap({{
             return
         if uri not in self.textDocuments:
             self.textDocument_didOpen()
+            return
         newText = self.currentBufferText()
         text_doc = self.textDocuments[uri]
         if newText == text_doc.text:
@@ -1111,15 +1153,19 @@ call fzf#run(fzf#wrap({{
 
     def handleTextDocumentFormatting(
             self, textEdits: List, curPos: Dict, bufnames: List[str]) -> None:
+        textDocumentEdit = {
+            "textDocument": {
+                "uri": curPos["uri"],
+            },
+            "edits": textEdits,
+        }
 
-        def updateBufferContent():
-            text = self.nvim.current.buffer[:]
-            for textEdit in textEdits:
-                text = apply_TextEdit(text, textEdit)
-            self.nvim.current.buffer[:] = text
+        def apply():
+            self.apply_TextDocumentEdit(textDocumentEdit),
+            self.restore_cursor(curPos),
+            logger.info("End textDocument/formatting"),
 
-        self.nvim.async_call(updateBufferContent)
-        logger.info("End textDocument/formatting")
+        self.nvim.async_call(apply)
 
     @neovim.function("LanguageClient_textDocument_rangeFormatting")
     @args()
@@ -1198,4 +1244,3 @@ call fzf#run(fzf#wrap({{
 
     def handleError(self, message) -> None:
         self.asyncEcho(json.dumps(message))
-
