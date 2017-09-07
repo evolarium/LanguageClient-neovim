@@ -5,8 +5,12 @@ logger = logging.getLogger("LanguageClient")
 with tempfile.NamedTemporaryFile(
         prefix="LanguageClient-",
         suffix=".log", delete=False) as tmp:
-    tmpname = tmp.name
-fileHandler = logging.FileHandler(filename=tmpname)
+    logpath = tmp.name
+with tempfile.NamedTemporaryFile(
+        prefix="LanguageServer-",
+        suffix=".log", delete=False) as tmp:
+    logpath_server = tmp.name
+fileHandler = logging.FileHandler(logpath)
 fileHandler.setFormatter(
     logging.Formatter(
         "%(asctime)s %(levelname)-7s [%(threadName)-10s] %(message)s",
