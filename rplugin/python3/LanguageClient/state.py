@@ -13,11 +13,8 @@ state = {
     "handlers": {},  # Dict[int, PyGreenlet]. message id to greenlet.
     "capabilities": {},  # Dict[str, Dict]. language id to capabilities.
     "rootUris": {},  # Dict[str, str]. language id to rootUri.
-    "textDocuments": {},  # Dict[str, TextDocumentItem]. uri to TextDocumentItem.
-    "line_diagnostics": {},  # Dict[str, Dict[int, Dict]]. uri to line number to diagnostic message.
+
     "last_cursor_line": -1,
-    "highlight_source_id": None,
-    "signs": [],  # diagnostic signs
 
     # Settings
     "serverCommands": {},  # Dict[str, List[str]]. language id to server command.
@@ -121,7 +118,7 @@ def wake_up(mid: int, result: Any) -> None:
 def handle_error(response: Dict) -> bool:
     if "error" in response:
         logger.error(str(response))
-        echomsg(json.dumps(response))
+        echoerr(json.dumps(response))
         return True
     else:
         return False
@@ -139,9 +136,15 @@ def echo(message: str) -> None:
 
 
 def echomsg(message: str) -> None:
-    """Echomsg message"""
+    """Echo message"""
     message = escape(message)
     execute_command("echomsg '{}'".format(message))
+
+
+def echoerr(message: str) -> None:
+    """Echo message as error."""
+    message = escape(message)
+    execute_command("echohl Error | echomsg '{}' | echohl None".format(message))
 
 
 def echo_ellipsis(msg: str, columns: int) -> None:

@@ -13,7 +13,9 @@ from .RPC import RPC
 from .Sign import Sign
 from .TextDocumentItem import TextDocumentItem
 from .logger import logger, logpath_server, setLoggingLevel
-from .state import state, update_state, execute_command, echo, echomsg, echo_ellipsis, make_serializable, set_state
+from .state import (
+    state, update_state, execute_command, echo, echomsg, echoerr,
+    echo_ellipsis, make_serializable, set_state)
 from .util import (
     get_rootPath, path_to_uri, uri_to_path, get_command_goto_file, get_command_update_signs,
     convert_vim_command_args_to_kwargs, apply_TextEdit, markedString_to_str,
@@ -61,7 +63,8 @@ def gather_args(keys: List, args: List = [], kwargs: Dict = {}) -> List:
         elif k == "buftype":
             res[k] = state["nvim"].current.buffer.options["buftype"]
         elif k == "uri":
-            res[k] = path_to_uri(state["nvim"].current.buffer.name)
+            filename = kwargs.get("filename") or state["nvim"].current.buffer.name
+            res[k] = path_to_uri(filename)
         elif k == "line":
             cursor = state["nvim"].current.window.cursor
             res[k] = cursor[0] - 1
@@ -105,13 +108,13 @@ def sync_settings() -> None:
 def alive(languageId: str, warn: bool) -> bool:
     """Check if language server for language id is alive."""
     msg = None
-    if languageId not in state["servers"]:
+    if state["servers"].get(languageId) is None:
         msg = "Language client is not running. Try :LanguageClientStart"
     elif state["servers"][languageId].poll() is not None:
         msg = "Failed to start language server. See {}.".format(logpath_server)
     if msg and warn:
         logger.warn(msg)
-        echomsg(msg)
+        echoerr(msg)
     return msg is None
 
 
@@ -212,23 +215,24 @@ call fzf#run(fzf#wrap({{
     state["nvim"].feedkeys("i")
 
 
-def show_diagnostics(diagnostics_params):
+def show_diagnostics(uri: str, diagnostics: List) -> None:
     """
     Show diagnostics.
     """
-    path = uri_to_path(diagnostics_params["uri"])
+    path = uri_to_path(uri)
     buffer = state["nvim"].current.buffer
-    if path != buffer.name:
-        return
 
-    if not state["highlight_source_id"]:
+    if state.get(uri, {}).get("highlight_source_id") is None:
         update_state({
-            "highlight_source_id": state["nvim"].new_highlight_source(),
+            uri: {
+                "highlight_source_id": state["nvim"].new_highlight_source(),
+            }
         })
-    buffer.clear_highlight(state["highlight_source_id"])
+    highlight_source_id = state[uri]["highlight_source_id"]
+    buffer.clear_highlight(highlight_source_id)
     signs = []
     qflist = []
-    for entry in diagnostics_params["diagnostics"]:
+    for entry in diagnostics:
         start_line = entry["range"]["start"]["line"]
         start_character = entry["range"]["start"]["character"]
         end_character = entry["range"]["end"]["character"]
@@ -237,7 +241,7 @@ def show_diagnostics(diagnostics_params):
         text_highlight = display["texthl"]
         buffer.add_highlight(text_highlight, start_line,
                              start_character, end_character,
-                             state["highlight_source_id"])
+                             highlight_source_id)
 
         sign_name = display["name"]
 
@@ -258,9 +262,9 @@ def show_diagnostics(diagnostics_params):
             "type": qftype,
         })
 
-    cmd = get_command_update_signs(state["signs"], signs)
-    set_state(["signs"], signs)
+    cmd = get_command_update_signs(state[uri].get("signs", []), signs)
     execute_command(cmd)
+    set_state([uri, "signs"], signs)
 
     if state["diagnosticsList"] == "quickfix":
         state["nvim"].funcs.setqflist(qflist)
@@ -269,26 +273,11 @@ def show_diagnostics(diagnostics_params):
 
 
 def show_line_diagnostic(uri: str, line: int, columns: int) -> None:
-    entry = state["line_diagnostics"].get(uri, {}).get(line)
+    entry = state.get(uri, {}).get("line_diagnostics", {}).get(line)
     if entry is None:
-        echo("")
         return
 
-    msg = ""
-    if "severity" in entry:
-        severity = {
-            1: "E",
-            2: "W",
-            3: "I",
-            4: "H",
-        }[entry["severity"]]
-        msg += "[{}]".format(severity)
-    if "code" in entry:
-        code = entry["code"]
-        msg += str(code)
-    msg += " " + entry["message"]
-
-    echo_ellipsis(msg, columns)
+    echo_ellipsis(entry, columns)
 
 
 @neovim.plugin
@@ -348,7 +337,7 @@ class LanguageClient:
                 return
             msg = "No language server command found for type: {}.".format(languageId)
             logger.error(msg)
-            echomsg(msg)
+            echoerr(msg)
             return
 
         logger.info("Begin LanguageClientStart")
@@ -367,7 +356,7 @@ class LanguageClient:
         except Exception as ex:
             msg = "Failed to start language server: " + ex.args[1]
             logger.exception(msg)
-            echomsg(msg)
+            echoerr(msg)
             return
 
         rpc = RPC(proc.stdout, proc.stdin, self.handle_request_and_notify)
@@ -402,7 +391,11 @@ class LanguageClient:
     def stop(self, languageId: str) -> None:
         state["rpcs"][languageId].run = False
         self.exit(languageId=languageId)
-        del state["servers"][languageId]
+        update_state({
+            "servers": {
+                languageId: None
+            }
+        })
 
         if state["nvim"].call("exists", "#User#LanguageClientStopped") == 1:
             state["nvim"].command("doautocmd User LanguageClientStopped")
@@ -465,11 +458,11 @@ class LanguageClient:
             logger.warn("register completion manager source failed. Error: " +
                         repr(ex))
 
-    @neovim.autocmd("BufReadPost", pattern="*")
-    def handle_BufReadPost(self):
+    @neovim.autocmd("BufReadPost", pattern="*", eval="{'languageId': &filetype, 'filename': expand('%:p')}")
+    def handle_BufReadPost(self, kwargs):
         logger.info("Begin handleBufReadPost")
 
-        languageId, uri = gather_args(["languageId", "uri"])
+        languageId, uri = gather_args(["languageId", "uri"], kwargs=kwargs)
         if not uri:
             return
         # Language server is running but file is not within rootUri.
@@ -477,11 +470,14 @@ class LanguageClient:
                 not uri.startswith(state["rootUris"][languageId])):
             return
         # Opened before.
-        if uri in state["textDocuments"]:
+        if state.get(uri, {}).get("textDocument") is not None:
             return
 
         if alive(languageId, warn=False):
-            self.textDocument_didOpen(uri=uri)
+            self.textDocument_didOpen(uri=uri, languageId=languageId)
+            show_diagnostics(uri, state.get(uri, {}).get("diagnostics", []))
+            line, columns = gather_args(["line", "columns"])
+            show_line_diagnostic(uri, line, columns)
         elif state["autoStart"]:
             self.start(warn=False)
 
@@ -494,11 +490,7 @@ class LanguageClient:
         text = get_current_buffer_text()
 
         textDocumentItem = TextDocumentItem(uri, languageId, text)
-        update_state({
-            "textDocuments": {
-                uri: textDocumentItem
-            }
-        })
+        set_state([uri, "textDocument"], textDocumentItem)
 
         state["rpcs"][languageId].notify("textDocument/didOpen", {
             "textDocument": {
@@ -522,7 +514,7 @@ class LanguageClient:
             }
         })
 
-        del state["textDocuments"][uri]
+        set_state([uri, "textDocument"], None)
 
     @neovim.function("LanguageClient_textDocument_hover")
     @deco_args()
@@ -585,7 +577,7 @@ class LanguageClient:
             msg = ("Handling multiple definitions is not implemented yet."
                    " Jumping to first.")
             logger.error(msg)
-            echomsg(msg)
+            echoerr(msg)
 
         if isinstance(result, list):
             if len(result) == 0:
@@ -686,7 +678,7 @@ class LanguageClient:
         else:
             msg = "No selection UI found. Consider install fzf or denite.vim."
             logger.warn(msg)
-            echomsg(msg)
+            echoerr(msg)
 
         logger.info("End textDocument/documentSymbol")
         return symbols
@@ -743,7 +735,7 @@ class LanguageClient:
         else:
             msg = "No selection UI found. Consider install fzf or denite.vim."
             logger.warn(msg)
-            echomsg(msg)
+            echoerr(msg)
 
         logger.info("End workspace/symbol")
         return symbols
@@ -816,9 +808,67 @@ class LanguageClient:
         else:
             msg = "No selection UI found. Consider install fzf or denite.vim."
             logger.warn(msg)
-            echomsg(msg)
+            echoerr(msg)
 
         logger.info("End textDocument/references")
+        return locations
+
+    @neovim.function("LanguageClient_rustDocument_implementations")
+    @deco_args()
+    def rustDocument_implementations(
+            self, uri: str, languageId: str, line: int, character: int,
+            handle=True) -> List:
+        logger.info("Begin rustDocument/implementations")
+
+        self.textDocument_didChange()
+
+        locations = state["rpcs"][languageId].call("rustDocument/implementations", {
+            "textDocument": {
+                "uri": uri,
+            },
+            "position": {
+                "line": line,
+                "character": character,
+            }
+        })
+
+        if locations is None or not handle:
+            return locations
+
+        if state["selectionUI"] == "fzf":
+            source = []  # type: List[str]
+            for loc in locations:
+                path = os.path.relpath(loc["uri"],
+                                       state["rootUris"][languageId])
+                start = loc["range"]["start"]
+                line = start["line"] + 1
+                character = start["character"] + 1
+                text = get_file_line(uri_to_path(loc["uri"]), line)
+                entry = "{}:{}:{}: {}".format(path, line, character, text)
+                source.append(entry)
+            fzf(source, "LanguageClient#FZFSinkTextDocumentReferences")
+        elif state["selectionUI"] == "location-list":
+            loclist = []
+            for loc in locations:
+                path = uri_to_path(loc["uri"])
+                start = loc["range"]["start"]
+                line = start["line"] + 1
+                character = start["character"] + 1
+                text = get_file_line(path, line)
+                loclist.append({
+                    "filename": path,
+                    "lnum": line,
+                    "col": character,
+                    "text": text
+                })
+            state["nvim"].funcs.setloclist(0, loclist)
+            echo("References populated to location list.")
+        else:
+            msg = "No selection UI found. Consider install fzf or denite.vim."
+            logger.warn(msg)
+            echoerr(msg)
+
+        logger.info("End rustDocument/implementations")
         return locations
 
     @neovim.function("LanguageClient_FZFSinkTextDocumentReferences")
@@ -833,29 +883,29 @@ class LanguageClient:
         cmd = get_command_goto_file(path, bufnames, line, character)
         execute_command(cmd)
 
-    @neovim.autocmd("TextChanged", pattern="*", eval='fnamemodify(expand("<afile>"), ":p")')
-    def handle_TextChanged(self, filename) -> None:
-        uri = path_to_uri(filename)
-        if not uri or uri not in state["textDocuments"]:
+    @neovim.autocmd("TextChanged", pattern="*", eval="{'filename': expand('%:p'), 'buftype': &buftype}")
+    def handle_TextChanged(self, kwargs) -> None:
+        uri, buftype = gather_args(["uri", "buftype"], kwargs=kwargs)
+        if buftype != "" or state.get(uri, {}).get("textDocument") is None:
             return
-        text_doc = state["textDocuments"][uri]
+        text_doc = state[uri]["textDocument"]
         if text_doc.skip_change(state["changeThreshold"]):
             return
         self.textDocument_didChange()
 
-    @neovim.autocmd("TextChangedI", pattern="*", eval='fnamemodify(expand("<afile>"), ":p")')
-    def handle_TextChangedI(self, filename):
-        self.handle_TextChanged(filename)
+    @neovim.autocmd("TextChangedI", pattern="*", eval="{'filename': expand('%:p'), 'buftype': &buftype}")
+    def handle_TextChangedI(self, kwargs):
+        self.handle_TextChanged(kwargs)
 
     @deco_args(warn=False)
     def textDocument_didChange(self, uri: str, languageId: str) -> None:
         if not uri or languageId not in state["serverCommands"]:
             return
-        if uri not in state["textDocuments"]:
+        if state.get(uri, {}).get("textDocument") is None:
             self.textDocument_didOpen()
             return
         new_text = get_current_buffer_text()
-        doc = state["textDocuments"][uri]
+        doc = state[uri]["textDocument"]
         if new_text == doc.text:
             return
 
@@ -873,8 +923,9 @@ class LanguageClient:
 
         doc.commit_change()
 
-    @neovim.autocmd("BufWritePost", pattern="*")
-    def handle_BufWritePost(self):
+    @neovim.autocmd("BufWritePost", pattern="*", eval="{'languageId': &filetype, 'filename': expand('%:p')}")
+    def handle_BufWritePost(self, kwargs):
+        uri, languageId = gather_args(["uri", "languageId"], kwargs=kwargs)
         self.textDocument_didSave()
 
     @deco_args(warn=False)
@@ -947,6 +998,9 @@ class LanguageClient:
         result = self.textDocument_completion()
         logger.debug("result: %s", result)
 
+        if result is None:
+            return
+
         items = result
         isIncomplete = False
         if isinstance(result, dict):
@@ -995,12 +1049,36 @@ class LanguageClient:
             return
 
         uri = diagnostics_params["uri"]
+        diagnostics = diagnostics_params["diagnostics"]
+        set_state([uri, "diagnostics"], diagnostics)
+
         line_diagnostics = {}
-        for entry in diagnostics_params["diagnostics"]:
+        for entry in diagnostics:
             line = entry["range"]["start"]["line"]
-            line_diagnostics[line] = entry
-        set_state(["line_diagnostics", uri], line_diagnostics)
-        state["nvim"].async_call(show_diagnostics, diagnostics_params)
+            msg = ""
+            if "severity" in entry:
+                severity = {
+                    1: "E",
+                    2: "W",
+                    3: "I",
+                    4: "H",
+                }[entry["severity"]]
+                msg += "[{}]".format(severity)
+            if "code" in entry:
+                code = entry["code"]
+                msg += str(code)
+            msg += " " + entry["message"]
+            line_diagnostics[line] = msg
+
+        set_state([uri, "line_diagnostics"], line_diagnostics)
+
+        if path_to_uri(state["nvim"].current.buffer.name) != uri:
+            return
+
+        show_diagnostics(uri, diagnostics)
+
+        line, columns = gather_args(["line", "columns"])
+        show_line_diagnostic(uri, line, columns)
 
     @neovim.autocmd("CursorMoved", pattern="*", eval="[&buftype, line('.')]")
     def handle_CursorMoved(self, args: List) -> None:
@@ -1044,7 +1122,9 @@ class LanguageClient:
 
         self.textDocument_didChange()
         result = state["rpcs"][languageId].call("textDocument/signatureHelp", {
-            "textDocument": uri,
+            "textDocument": {
+                uri: uri,
+            },
             "position": {
                 "line": line,
                 "character": character,
@@ -1069,7 +1149,9 @@ class LanguageClient:
 
         self.textDocument_didChange()
         result = state["rpcs"][languageId].call("textDocument/codeAction", {
-            "textDocument": uri,
+            "textDocument": {
+                uri: uri,
+            },
             "range": range,
             "context": context,
         })
@@ -1193,12 +1275,24 @@ class LanguageClient:
             4: "Log",
         }[params["type"]]
         msg = "[{}] {}".format(msgType, params["message"])  # noqa: F841
-        # echomsg(msg)
+        echomsg(msg)
 
     # Extension by JDT language server.
     def language_status(self, params: Dict) -> None:
         msg = "{} {}".format(params["type"], params["message"])
         echomsg(msg)
+
+    def rustDocument_beginBuild(self, params: Dict) -> None:
+        msg = "rustDocument/beginBuild"
+        echomsg(msg)
+
+    def rustDocument_diagnosticsBegin(self, params: Dict) -> None:
+        msg = "rustDocument/diagnosticsBegin"  # noqa: F841
+        # echomsg(msg)
+
+    def rustDocument_diagnosticsEnd(self, params: Dict) -> None:
+        msg = "rustDocument/diagnosticsEnd"  # noqa: F841
+        # echomsg(msg)
 
     def handle_request_and_notify(self, message: Dict) -> None:
         method = message["method"].replace("/", "_")
