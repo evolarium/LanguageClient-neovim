@@ -15,7 +15,7 @@ from .TextDocumentItem import TextDocumentItem
 from .logger import logger, logpath_server, setLoggingLevel
 from .state import (
     state, update_state, execute_command, echo, echomsg, echoerr,
-    echo_ellipsis, make_serializable, set_state)
+    echo_ellipsis, make_serializable, set_state, alive)
 from .util import (
     get_rootPath, path_to_uri, uri_to_path, get_command_goto_file, get_command_update_signs,
     convert_vim_command_args_to_kwargs, apply_TextEdit, markedString_to_str,
@@ -103,19 +103,6 @@ def sync_settings() -> None:
         "autoStart": state["nvim"].vars.get("LanguageClient_autoStart", False),
         "diagnosticsDisplay": state["nvim"].vars.get("LanguageClient_diagnosticsDisplay", {}),
     })
-
-
-def alive(languageId: str, warn: bool) -> bool:
-    """Check if language server for language id is alive."""
-    msg = None
-    if state["servers"].get(languageId) is None:
-        msg = "Language client is not running. Try :LanguageClientStart"
-    elif state["servers"][languageId].poll() is not None:
-        msg = "Failed to start language server. See {}.".format(logpath_server)
-    if msg and warn:
-        logger.warn(msg)
-        echoerr(msg)
-    return msg is None
 
 
 def get_current_buffer_text() -> str:
@@ -359,7 +346,7 @@ class LanguageClient:
             echoerr(msg)
             return
 
-        rpc = RPC(proc.stdout, proc.stdin, self.handle_request_and_notify)
+        rpc = RPC(proc.stdout, proc.stdin, self.handle_request_and_notify, languageId)
         thread = threading.Thread(target=rpc.serve, name="RPC-" + languageId, daemon=True)
         thread.start()
 
@@ -389,7 +376,6 @@ class LanguageClient:
     @neovim.command("LanguageClientStop")
     @deco_args()
     def stop(self, languageId: str) -> None:
-        state["rpcs"][languageId].run = False
         self.exit(languageId=languageId)
         update_state({
             "servers": {
@@ -458,7 +444,8 @@ class LanguageClient:
             logger.warn("register completion manager source failed. Error: " +
                         repr(ex))
 
-    @neovim.autocmd("BufReadPost", pattern="*", eval="{'languageId': &filetype, 'filename': expand('%:p')}")
+    @neovim.autocmd("BufReadPost", pattern="*",
+                    eval="{'languageId': &filetype, 'filename': expand('%:p')}")
     def handle_BufReadPost(self, kwargs):
         logger.info("Begin handleBufReadPost")
 
@@ -774,7 +761,19 @@ class LanguageClient:
             },
         })
 
-        if locations is None or not handle:
+        if locations is None:
+            return locations
+
+        # enhance with the line's contents for Denite
+        for loc in locations:
+            path = uri_to_path(loc["uri"])
+            start = loc["range"]["start"]
+            line = start["line"] + 1
+            character = start["character"] + 1
+            text = get_file_line(path, line)
+            loc['text'] = text
+
+        if not handle:
             return locations
 
         if state["selectionUI"] == "fzf":
@@ -785,7 +784,7 @@ class LanguageClient:
                 start = loc["range"]["start"]
                 line = start["line"] + 1
                 character = start["character"] + 1
-                text = get_file_line(uri_to_path(loc["uri"]), line)
+                text = loc["text"]
                 entry = "{}:{}:{}: {}".format(path, line, character, text)
                 source.append(entry)
             fzf(source, "LanguageClient#FZFSinkTextDocumentReferences")
@@ -796,7 +795,7 @@ class LanguageClient:
                 start = loc["range"]["start"]
                 line = start["line"] + 1
                 character = start["character"] + 1
-                text = get_file_line(path, line)
+                text = loc["text"]
                 loclist.append({
                     "filename": path,
                     "lnum": line,
@@ -883,7 +882,8 @@ class LanguageClient:
         cmd = get_command_goto_file(path, bufnames, line, character)
         execute_command(cmd)
 
-    @neovim.autocmd("TextChanged", pattern="*", eval="{'filename': expand('%:p'), 'buftype': &buftype}")
+    @neovim.autocmd("TextChanged", pattern="*",
+                    eval="{'filename': expand('%:p'), 'buftype': &buftype}")
     def handle_TextChanged(self, kwargs) -> None:
         uri, buftype = gather_args(["uri", "buftype"], kwargs=kwargs)
         if buftype != "" or state.get(uri, {}).get("textDocument") is None:
@@ -893,7 +893,8 @@ class LanguageClient:
             return
         self.textDocument_didChange()
 
-    @neovim.autocmd("TextChangedI", pattern="*", eval="{'filename': expand('%:p'), 'buftype': &buftype}")
+    @neovim.autocmd("TextChangedI", pattern="*",
+                    eval="{'filename': expand('%:p'), 'buftype': &buftype}")
     def handle_TextChangedI(self, kwargs):
         self.handle_TextChanged(kwargs)
 
@@ -923,7 +924,8 @@ class LanguageClient:
 
         doc.commit_change()
 
-    @neovim.autocmd("BufWritePost", pattern="*", eval="{'languageId': &filetype, 'filename': expand('%:p')}")
+    @neovim.autocmd("BufWritePost", pattern="*",
+                    eval="{'languageId': &filetype, 'filename': expand('%:p')}")
     def handle_BufWritePost(self, kwargs):
         uri, languageId = gather_args(["uri", "languageId"], kwargs=kwargs)
         self.textDocument_didSave()
@@ -1141,29 +1143,93 @@ class LanguageClient:
         logger.info("End textDocument/signatureHelp")
         return result
 
+    @neovim.function("LanguageClient_textDocument_codeAction")
     @deco_args()
     def textDocument_codeAction(
-            self, uri: str, languageId: str, range: Dict, context: Dict,
-            handle=True) -> Dict:
+            self, uri: str, languageId: str, line: int, character: int, handle=True) -> Dict:
         logger.info("Begin textDocument/codeAction")
 
+        diagnostics = [entry for entry in state[uri]["diagnostics"]
+                       if line >= entry["range"]["start"]["line"] and
+                       line <= entry["range"]["end"]["line"] and
+                       character >= entry["range"]["start"]["character"] and
+                       character <= entry["range"]["end"]["character"]]
+
+        if len(diagnostics) == 0:
+            echomsg("No diagnostics found.")
+            return None
+
+        range = {
+            "start": {
+                "line": diagnostics[0]["range"]["start"]["line"],
+                "character": diagnostics[0]["range"]["start"]["character"],
+            },
+            "end": {
+                "line": diagnostics[0]["range"]["end"]["line"],
+                "character": diagnostics[0]["range"]["end"]["character"],
+            },
+        }
+
         self.textDocument_didChange()
-        result = state["rpcs"][languageId].call("textDocument/codeAction", {
+        commands = state["rpcs"][languageId].call("textDocument/codeAction", {
             "textDocument": {
-                uri: uri,
+                "uri": uri,
             },
             "range": range,
-            "context": context,
+            "context": {
+                "diagnostics": diagnostics,
+            },
         })
 
-        if result is None or not handle:
-            return result
+        if commands is None or not handle:
+            return commands
 
-        # TODO: proper integration.
-        logger.warn(result)
-        echomsg(json.dumps(result))
+        update_state({
+            "codeActionCommands": commands,
+        })
+        source = ["{}: {}".format(entry["command"], entry["title"])
+                  for entry in commands]
+
+        if state["selectionUI"] == "fzf":
+            fzf(source, "LanguageClient#FZFSinkTextDocumentCodeAction")
+        else:
+            msg = "No selection UI found. Consider install fzf or denite.vim."
+            logger.warn(msg)
+            echoerr(msg)
 
         logger.info("End textDocument/codeAction")
+        return commands
+
+    @neovim.function("LanguageClient_FZFSinkTextDocumentCodeAction")
+    def fzfSinkTextDocumentCodeAction(self, lines: str) -> None:
+        command, _ = lines[0].split(":")
+        entries = [entry for entry in state["codeActionCommands"]
+                   if entry["command"] == command]
+
+        if len(entries) is None:
+            msg = "Failed to find command: {}".format(command)
+            logger.error(msg)
+            echoerr(msg)
+            return
+
+        entry = entries[0]
+        self.workspace_executeCommand(command=command, arguments=entry.get("arguments"))
+        update_state({
+            "codeActionCommands": [],
+        })
+
+    @neovim.function("LanguageClient_workspace_executeCommand")
+    @deco_args()
+    def workspace_executeCommand(self, languageId: str, command: str,
+                                 arguments, handle=True):
+        logger.info("Begin workspace/executeCommand")
+
+        result = state["rpcs"][languageId].call("workspace/executeCommand", {
+            "command": command,
+            "arguments": arguments,
+        })
+
+        logger.info("End workspace/executeCommand")
         return result
 
     @neovim.function("LanguageClient_textDocument_formatting")
@@ -1293,6 +1359,10 @@ class LanguageClient:
     def rustDocument_diagnosticsEnd(self, params: Dict) -> None:
         msg = "rustDocument/diagnosticsEnd"  # noqa: F841
         # echomsg(msg)
+
+    def workspace_applyEdit(self, params: Dict) -> None:
+        apply_WorkspaceEdit(params["edit"])
+        # TODO: write response to server.
 
     def handle_request_and_notify(self, message: Dict) -> None:
         method = message["method"].replace("/", "_")
