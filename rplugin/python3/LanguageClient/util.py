@@ -161,18 +161,22 @@ def get_command_update_signs(signs: List[Sign], next_signs: List[Sign]) -> str:
     diff = difflib.SequenceMatcher(None, signs_uniq, next_signs_uniq)
     for op, i1, i2, j1, j2 in diff.get_opcodes():
         if op == "replace":
+            removed_lines = set()
             for i in range(i1, i2):
                 cmd += get_command_delete_sign(signs_uniq[i])
-                sameLine = list(filter(lambda sign: sign.line == signs[i].line, signs[i + 1:]))
-                for sign in sameLine[:1]:
+                removed_lines.add(sign.line)
+            for sign in signs[i2:]:
+                if sign.line in removed_lines:
                     cmd += get_command_add_sign(sign)
             for i in range(j1, j2):
                 cmd += get_command_add_sign(next_signs_uniq[i])
         elif op == "delete":
+            removed_lines = set()
             for i in range(i1, i2):
                 cmd += get_command_delete_sign(signs_uniq[i])
-                sameLine = list(filter(lambda sign: sign.line == signs[i].line, signs[i + 1:]))
-                for sign in sameLine[:1]:
+                removed_lines.add(sign.line)
+            for sign in signs[i2:]:
+                if sign.line in removed_lines:
                     cmd += get_command_add_sign(sign)
         elif op == "insert":
             for i in range(j1, j2):
