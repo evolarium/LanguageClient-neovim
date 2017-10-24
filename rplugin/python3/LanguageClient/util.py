@@ -156,8 +156,8 @@ def get_command_add_sign(sign: Sign) -> str:
 
 def get_command_update_signs(signs: List[Sign], next_signs: List[Sign]) -> str:
     cmd = "echo"
-    signs_uniq = list(set(signs))
-    next_signs_uniq = list(set(next_signs))
+    signs_uniq = sorted(list(set(signs)))
+    next_signs_uniq = sorted(list(set(next_signs)))
     diff = difflib.SequenceMatcher(None, signs_uniq, next_signs_uniq)
     for op, i1, i2, j1, j2 in diff.get_opcodes():
         if op == "replace":
