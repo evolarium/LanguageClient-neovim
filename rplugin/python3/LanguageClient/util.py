@@ -156,36 +156,48 @@ def get_command_add_sign(sign: Sign) -> str:
 
 def get_command_update_signs(signs: List[Sign], next_signs: List[Sign]) -> str:
     cmd = "echo"
-    signs_uniq = sorted(list(set(signs)))
-    next_signs_uniq = sorted(list(set(next_signs)))
-    diff = difflib.SequenceMatcher(None, signs_uniq, next_signs_uniq)
-    for op, i1, i2, j1, j2 in diff.get_opcodes():
-        if op == "replace":
-            removed_lines = set()
-            for i in range(i1, i2):
-                cmd += get_command_delete_sign(signs_uniq[i])
-                removed_lines.add(signs_uniq[i].line)
-            for sign in signs_uniq[i2:]:
-                if sign.line in removed_lines:
-                    cmd += get_command_add_sign(sign)
-            for i in range(j1, j2):
-                cmd += get_command_add_sign(next_signs_uniq[i])
-        elif op == "delete":
-            removed_lines = set()
-            for i in range(i1, i2):
-                cmd += get_command_delete_sign(signs_uniq[i])
-                removed_lines.add(signs_uniq[i].line)
-            for sign in signs_uniq[i2:]:
-                if sign.line in removed_lines:
-                    cmd += get_command_add_sign(sign)
-        elif op == "insert":
-            for i in range(j1, j2):
-                cmd += get_command_add_sign(next_signs_uniq[i])
-        elif op == "equal":
-            pass
-        else:
-            msg = "Unknown diff op: " + op
-            logger.error(msg)
+    signs_uniq = set(signs)
+    next_signs_uniq = set(next_signs)
+    removed_signs = signs_uniq - next_signs_uniq
+    same_signs = signs_uniq & next_signs_uniq
+    new_signs = next_signs_uniq - signs_uniq
+
+    for removed_sign in removed_signs:
+        cmd += get_command_delete_sign(removed_sign)
+        for same_sign in same_signs:
+            if removed_sign.line == same_sign.line:
+                cmd += get_command_add_sign(same_sign)
+    for new_sign in new_signs:
+        cmd += get_command_add_sign(same_sign)
+
+    #diff = difflib.SequenceMatcher(None, signs_uniq, next_signs_uniq)
+    #for op, i1, i2, j1, j2 in diff.get_opcodes():
+    #    if op == "replace":
+    #        removed_lines = set()
+    #        for i in range(i1, i2):
+    #            cmd += get_command_delete_sign(signs_uniq[i])
+    #            removed_lines.add(signs_uniq[i].line)
+    #        for sign in signs_uniq[i2:]:
+    #            if sign.line in removed_lines:
+    #                cmd += get_command_add_sign(sign)
+    #        for i in range(j1, j2):
+    #            cmd += get_command_add_sign(next_signs_uniq[i])
+    #    elif op == "delete":
+    #        removed_lines = set()
+    #        for i in range(i1, i2):
+    #            cmd += get_command_delete_sign(signs_uniq[i])
+    #            removed_lines.add(signs_uniq[i].line)
+    #        for sign in signs_uniq[i2:]:
+    #            if sign.line in removed_lines:
+    #                cmd += get_command_add_sign(sign)
+    #    elif op == "insert":
+    #        for i in range(j1, j2):
+    #            cmd += get_command_add_sign(next_signs_uniq[i])
+    #    elif op == "equal":
+    #        pass
+    #    else:
+    #        msg = "Unknown diff op: " + op
+    #        logger.error(msg)
 
     return cmd
 
