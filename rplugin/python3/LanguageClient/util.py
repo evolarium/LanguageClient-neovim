@@ -168,7 +168,7 @@ def get_command_update_signs(signs: List[Sign], next_signs: List[Sign]) -> str:
             if removed_sign.line == same_sign.line:
                 cmd += get_command_add_sign(same_sign)
     for new_sign in new_signs:
-        cmd += get_command_add_sign(same_sign)
+        cmd += get_command_add_sign(new_sign)
 
     #diff = difflib.SequenceMatcher(None, signs_uniq, next_signs_uniq)
     #for op, i1, i2, j1, j2 in diff.get_opcodes():
