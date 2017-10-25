@@ -158,17 +158,11 @@ def get_command_update_signs(signs: List[Sign], next_signs: List[Sign]) -> str:
     cmd = "echo"
     signs_uniq = set(signs)
     next_signs_uniq = set(next_signs)
-    removed_signs = signs_uniq - next_signs_uniq
-    same_signs = signs_uniq & next_signs_uniq
-    new_signs = next_signs_uniq - signs_uniq
 
-    for removed_sign in removed_signs:
-        cmd += get_command_delete_sign(removed_sign)
-        for same_sign in same_signs:
-            if removed_sign.line == same_sign.line:
-                cmd += get_command_add_sign(same_sign)
-    for new_sign in new_signs:
-        cmd += get_command_add_sign(new_sign)
+    for sign in signs_uniq:
+        cmd += get_command_delete_sign(sign)
+    for sign in next_signs_uniq:
+        cmd += get_command_add_sign(sign)
 
     #diff = difflib.SequenceMatcher(None, signs_uniq, next_signs_uniq)
     #for op, i1, i2, j1, j2 in diff.get_opcodes():
