@@ -155,10 +155,11 @@ def get_command_add_sign(sign: Sign) -> str:
 
 
 def get_command_update_signs(signs: List[Sign], next_signs: List[Sign]) -> str:
-    cmd = "echo"
+    cmd = ""
     signs_uniq = set(signs)
     next_signs_uniq = set(next_signs)
     if signs_uniq != next_signs_uniq:
+        cmd += "echo"
         #logger.warn("Old: {}\n".format(signs_uniq))
         #logger.warn("New: {}\n".format(next_signs_uniq))
         removed_signs = signs_uniq - next_signs_uniq
