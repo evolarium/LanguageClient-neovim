@@ -155,42 +155,15 @@ def get_command_add_sign(sign: Sign) -> str:
 
 
 def get_command_update_signs(signs: List[Sign], next_signs: List[Sign]) -> str:
-    cmd = ""
+    cmd = "echo"
     signs_uniq = set(signs)
     next_signs_uniq = set(next_signs)
+
     if signs_uniq != next_signs_uniq:
-        cmd += "echo"
-        #logger.warn("Old: {}\n".format(signs_uniq))
-        #logger.warn("New: {}\n".format(next_signs_uniq))
-        removed_signs = signs_uniq - next_signs_uniq
-        new_signs = next_signs_uniq - signs_uniq
-        shared_signs = signs_uniq & next_signs_uniq
-        logger.warn("Removed: {}\n".format(removed_signs))
-        logger.warn("Shared: {}\n".format(shared_signs))
-        logger.warn("New: {}\n".format(new_signs))
-
-        altered_lines = set()
-        # Remove missing signs
-        for sign in removed_signs:
-            cmd += get_command_delete_sign(sign)
-            logger.warn("Deleting {}\n".format(sign))
-            altered_lines.add(sign.line)
-        # Readd sign if line was altered
-        for sign in shared_signs:
-            if sign.line in altered_lines:
-                cmd += get_command_add_sign(sign)
-                logger.warn("Readding {}\n".format(sign))
-        # Add new signs
-        for sign in new_signs:
-            cmd += get_command_add_sign(sign)
-            logger.warn("Adding {}\n".format(sign))
-        logger.warn("cmd: {}\n".format(cmd))
-
-    #if signs_uniq != next_signs_uniq:
-    #    for sign in signs_uniq:
-    #        cmd += get_command_delete_sign(sign)
-    #    for sign in next_signs_uniq:
-    #        cmd += get_command_add_sign(sign)
+      for sign in signs_uniq:
+          cmd += get_command_delete_sign(sign)
+      for sign in next_signs_uniq:
+          cmd += get_command_add_sign(sign)
 
     return cmd
 
