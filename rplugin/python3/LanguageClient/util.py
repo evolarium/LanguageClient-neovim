@@ -159,11 +159,14 @@ def get_command_update_signs(signs: List[Sign], next_signs: List[Sign]) -> str:
     signs_uniq = set(signs)
     next_signs_uniq = set(next_signs)
     if signs_uniq != next_signs_uniq:
-        logger.warn("Old: {}\n".format(signs_uniq))
-        logger.warn("New: {}\n".format(next_signs_uniq))
+        #logger.warn("Old: {}\n".format(signs_uniq))
+        #logger.warn("New: {}\n".format(next_signs_uniq))
         removed_signs = signs_uniq - next_signs_uniq
         new_signs = next_signs_uniq - signs_uniq
         shared_signs = signs_uniq & next_signs_uniq
+        logger.warn("Removed: {}\n".format(removed_signs))
+        logger.warn("Shared: {}\n".format(shared_signs))
+        logger.warn("New: {}\n".format(new_signs))
 
         altered_lines = set()
         # Remove missing signs
