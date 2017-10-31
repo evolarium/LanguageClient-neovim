@@ -160,10 +160,10 @@ def get_command_update_signs(signs: List[Sign], next_signs: List[Sign]) -> str:
     next_signs_uniq = set(next_signs)
 
     if signs_uniq != next_signs_uniq:
-      for sign in signs_uniq:
-          cmd += get_command_delete_sign(sign)
-      for sign in next_signs_uniq:
-          cmd += get_command_add_sign(sign)
+        for sign in signs_uniq:
+            cmd += get_command_delete_sign(sign)
+        for sign in next_signs_uniq:
+            cmd += get_command_add_sign(sign)
 
     return cmd
 
