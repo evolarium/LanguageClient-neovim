@@ -184,6 +184,7 @@ def get_command_update_signs(signs: List[Sign], next_signs: List[Sign]) -> str:
         for sign in new_signs:
             cmd += get_command_add_sign(sign)
             logger.warn("Adding {}\n".format(sign))
+        logger.warn("cmd: {}\n".format(cmd))
 
     #if signs_uniq != next_signs_uniq:
     #    for sign in signs_uniq:
