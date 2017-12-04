@@ -145,9 +145,9 @@ def get_command_update_signs(signs: List[Sign], next_signs: List[Sign],
 
     if signs_uniq != next_signs_uniq:
         for sign in signs_uniq:
-            cmd += get_command_delete_sign(sign)
+            cmd += get_command_delete_sign(sign, filename)
         for sign in next_signs_uniq:
-            cmd += get_command_add_sign(sign)
+            cmd += get_command_add_sign(sign, filename)
 
     return cmd
 
