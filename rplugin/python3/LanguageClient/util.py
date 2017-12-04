@@ -12,7 +12,6 @@ import re
 from . logger import logger
 from . Sign import Sign
 from .CompletionItemKind import convert_CompletionItemKind_to_vim_kind
-from .DiagnosticsDisplay import DiagnosticsDisplay
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -114,21 +113,6 @@ def escape(string: str) -> str:
     return string.replace("'", "''")
 
 
-def convert_Sign_to_vim_sign_id(sign: Sign) -> int:
-    # Vim sign ids are a global namespace restricted to signed 32-bit integers.
-    # As a polite attempt to avoid collisions with other plugins, we begin numbering far from 0
-    base_id = 75000
-
-    diagnostic_names = sorted(set(map(lambda diag: diag["name"], DiagnosticsDisplay.values())))
-    diagnostic_offset = 0
-    for offset, name in enumerate(diagnostic_names):
-        if name == sign.signname:
-            diagnostic_offset = offset
-            break
-    line_multi = len(diagnostic_names)
-    return base_id + ((sign.line - 1) * line_multi) + diagnostic_offset
-
-
 def retry(span, count, condition):
     while count > 0 and condition():
         logger.info("retrying...")
@@ -143,18 +127,18 @@ def get_command_goto_file(path, bufnames, l, c) -> str:
         return "exe 'edit +:call\\ cursor({},{}) ' . fnameescape('{}')".format(l, c, path)
 
 
-def get_command_delete_sign(sign: Sign) -> str:
-    return " | execute('sign unplace {} buffer={}')".format(
-            convert_Sign_to_vim_sign_id(sign), sign.bufnumber)
+def get_command_delete_sign(sign: Sign, filename: str) -> str:
+    return " | execute 'sign unplace {} file={}'".format(
+        sign.id, filename)
 
 
-def get_command_add_sign(sign: Sign) -> str:
-    return (" | execute('sign place {} line={} "
-            "name=LanguageClient{} buffer={}')").format(
-                convert_Sign_to_vim_sign_id(sign), sign.line, sign.signname, sign.bufnumber)
+def get_command_add_sign(sign: Sign, filename: str) -> str:
+    return (" | execute 'sign place {} line={} " "name=LanguageClient{} file={}'").format(
+        sign.id, sign.line, sign.severity.name, filename)
 
 
-def get_command_update_signs(signs: List[Sign], next_signs: List[Sign]) -> str:
+def get_command_update_signs(signs: List[Sign], next_signs: List[Sign],
+                             filename: str) -> str:
     cmd = "echo"
     signs_uniq = set(signs)
     next_signs_uniq = set(next_signs)

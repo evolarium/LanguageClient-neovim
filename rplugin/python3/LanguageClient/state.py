@@ -16,6 +16,7 @@ state = {
     "rootUris": {},  # Dict[str, str]. language id to rootUri.
 
     "last_cursor_line": -1,
+    "last_line_diagnostic": "",
     "codeActionCommands": [],  # List[Command]. Stashed codeAction commands.
 
     # Settings
@@ -85,14 +86,14 @@ def make_serializable(d: Any) -> Any:
             d2[k] = v
         return d2
     elif isinstance(d, list):
-        l = d
-        l2 = []
-        for i in l:
+        arr = d
+        arr2 = []
+        for i in arr:
             i2 = make_serializable(i)
             if i2 is None:
                 continue
-            l2.append(i2)
-        return l2
+            arr2.append(i2)
+        return arr2
     else:
         try:
             json.dumps(d)
@@ -163,6 +164,23 @@ def echo_ellipsis(msg: str, columns: int) -> None:
         msg = msg[:columns - 15] + "..."
 
     echo(msg)
+
+
+def echo_signature(signature: str, activeParameter: str = None) -> None:
+    """
+    Prints signature help, highlighting the active paramter
+    """
+    if activeParameter is None:
+        echo(signature)
+    parts = signature.split(activeParameter, 1)
+    if (len(parts) != 2):
+        # active paramter is not part of a signature
+        echo(signature)
+        return
+    [begin, end] = parts
+    execute_command("echon '{}' | echohl Bold | echon '{}' | echohl None | echon '{}'".format(
+        begin, activeParameter, end
+    ))
 
 
 def alive(languageId: str, warn: bool) -> bool:
