@@ -1,7 +1,6 @@
 use std;
 use types::*;
 use serde_json;
-use tempfile::NamedTempFileOptions;
 
 pub fn escape_single_quote(s: &str) -> String {
     s.replace("'", "''")
@@ -123,37 +122,19 @@ impl<P: AsRef<Path> + std::fmt::Debug> ToUrl for P {
 }
 
 pub fn get_logpath() -> PathBuf {
-    let dir = env::var("TMPDIR")
-        .or_else(|_| env::var("TMP"))
+    let dir = env::var("TMP")
         .or_else(|_| env::var("TEMP"))
         .unwrap_or_else(|_| "/tmp".to_owned());
 
-    let named_temp_file = NamedTempFileOptions::new()
-        .prefix("LanguageClient")
-        .suffix(".log")
-        .rand_bytes(6)
-        .create_in(&dir)
-        .unwrap();
-    let path = named_temp_file.path()
-        .to_str().unwrap();
-    PathBuf::from(path)
+    Path::new(&dir).join("LanguageClient.log")
 }
 
 pub fn get_logpath_server() -> PathBuf {
-    let dir = env::var("TMPDIR")
-        .or_else(|_| env::var("TMP"))
+    let dir = env::var("TMP")
         .or_else(|_| env::var("TEMP"))
         .unwrap_or_else(|_| "/tmp".to_owned());
 
-    let named_temp_file = NamedTempFileOptions::new()
-        .prefix("LanguageServer")
-        .suffix(".log")
-        .rand_bytes(6)
-        .create_in(&dir)
-        .unwrap();
-    let path = named_temp_file.path()
-        .to_str().unwrap();
-    PathBuf::from(path)
+    Path::new(&dir).join("LanguageServer.log")
 }
 
 pub fn get_log_server() -> Result<String> {

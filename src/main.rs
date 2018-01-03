@@ -11,8 +11,6 @@ extern crate libc;
 
 extern crate chrono;
 
-extern crate tempfile;
-
 #[cfg(test)]
 #[macro_use]
 extern crate maplit;
