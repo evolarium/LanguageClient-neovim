@@ -135,7 +135,6 @@ pub fn get_logpath() -> PathBuf {
         .create_in(&dir)
         .unwrap();
     let path = named_temp_file.path()
-        .file_name().unwrap()
         .to_str().unwrap();
     PathBuf::from(path)
 }
@@ -153,7 +152,6 @@ pub fn get_logpath_server() -> PathBuf {
         .create_in(&dir)
         .unwrap();
     let path = named_temp_file.path()
-        .file_name().unwrap()
         .to_str().unwrap();
     PathBuf::from(path)
 }
