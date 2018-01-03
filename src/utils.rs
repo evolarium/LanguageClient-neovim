@@ -1,7 +1,7 @@
 use std;
 use types::*;
 use serde_json;
-use tempfile::{NamedTempFileOptions,NamedTempFile};
+use tempfile::NamedTempFileOptions;
 
 pub fn escape_single_quote(s: &str) -> String {
     s.replace("'", "''")
