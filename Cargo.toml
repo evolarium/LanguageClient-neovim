@@ -15,6 +15,7 @@ libc = "*"
 lazy_static = "*"
 chrono = "0.4.*"
 maplit = "*"
+tempfile = "*"
 
 serde = "*"
 serde_derive = "*"
