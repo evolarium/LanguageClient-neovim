@@ -122,7 +122,8 @@ impl<P: AsRef<Path> + std::fmt::Debug> ToUrl for P {
 }
 
 pub fn get_logpath() -> PathBuf {
-    let dir = env::var("TMP")
+    let dir = env::var("TMPDIR")
+        .or_else(|_| env::var("TMP"))
         .or_else(|_| env::var("TEMP"))
         .unwrap_or_else(|_| "/tmp".to_owned());
 
@@ -130,7 +131,8 @@ pub fn get_logpath() -> PathBuf {
 }
 
 pub fn get_logpath_server() -> PathBuf {
-    let dir = env::var("TMP")
+    let dir = env::var("TMPDIR")
+        .or_else(|_| env::var("TMP"))
         .or_else(|_| env::var("TEMP"))
         .unwrap_or_else(|_| "/tmp".to_owned());
 
