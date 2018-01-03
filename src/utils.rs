@@ -1,7 +1,6 @@
 use std;
 use types::*;
 use serde_json;
-extern crate tempfile;
 use tempfile::{NamedTempFileOptions,NamedTempFile};
 
 pub fn escape_single_quote(s: &str) -> String {
