@@ -636,26 +636,41 @@ impl ILanguageClient for Arc<Mutex<State>> {
         let mut signs: Vec<_> = diagnostics
             .iter()
             .map(|dn| {
-                let line = dn.range.start.line;
-                let text = texts
-                    .get(line as usize)
-                    .map(|l| l.to_string())
-                    .unwrap_or_default();
                 let severity = dn.severity.unwrap_or(DiagnosticSeverity::Information);
-                Sign::new(line + 1, text, severity)
+                Sign::new(dn.range.start.line + 1, 0, severity)
             })
             .collect();
-        signs.sort_unstable();
+        signs.sort();
+        // Signs have been sorted by line, then severity
+        // We only want to keep the highest severity (first in order)
+        signs.dedup_by(|a,b| a.line == b.line);
 
         let cmd = self.update(|state| {
-            let cmd: String;
-            {
-                let empty = vec![];
-                let signs_prev = state.signs.get(filename).unwrap_or(&empty);
-                cmd = get_command_update_signs(signs_prev, &signs, filename);
+            let mut sign_id = 75_000;
+            let signs_prev: Vec<Sign> = state.signs.remove(filename).unwrap_or_default();
+            let prev_hashmap: HashMap<(u64,u64),Sign> = signs_prev.iter().map(|e| ((e.line, e.severity.to_int().unwrap()),e.to_owned())).collect();
+            let mut used_ids = HashSet::<u64>::new();
+            for ref mut sign in signs.iter_mut() {
+                if prev_hashmap.contains_key(&(sign.line, sign.severity.to_int().unwrap())) {
+                    let matching_sign = prev_hashmap.get(&(sign.line, sign.severity.to_int().unwrap())).unwrap();
+                    sign.id = matching_sign.id;
+                    used_ids.insert(sign.id);
+                }
             }
-            state.signs.insert(filename.to_owned(), signs);
-            Ok(cmd)
+            used_ids.extend(signs_prev.iter().map(|e| e.id));
+            for sign in signs.iter_mut() {
+                if sign.id == 0 {
+                    while used_ids.contains(&sign_id) {
+                        sign_id += 1;
+                    }
+                    sign.id = sign_id;
+                    used_ids.insert(sign.id);
+                }
+            }
+            state
+                .signs
+                .insert(filename.to_owned(), signs.clone());
+            Ok(get_command_update_signs(&signs_prev, &signs, filename))
         })?;
         info!("Command to update signs: {}", cmd);
         self.command(&cmd)?;

@@ -179,33 +179,34 @@ impl DiagnosticsDisplay {
 }
 
 // Maybe with (line, character) as key.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sign {
     pub id: u64,
     pub line: u64,
-    pub text: String,
     pub severity: DiagnosticSeverity,
 }
 
 impl Sign {
-    pub fn new(line: u64, text: String, severity: DiagnosticSeverity) -> Sign {
+    pub fn new(line: u64, id: u64, severity: DiagnosticSeverity) -> Sign {
         Sign {
-            id: Self::get_id(line, severity),
+            id,
             line,
-            text,
             severity,
         }
-    }
-
-    fn get_id(line: u64, severity: DiagnosticSeverity) -> u64 {
-        let base_id = 75_000;
-        base_id + (line - 1) * 4 + severity.to_int().unwrap_or(0) - 1
     }
 }
 
 impl std::cmp::Ord for Sign {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.id.cmp(&other.id)
+        match self.line.cmp(&other.line) {
+            std::cmp::Ordering::Equal => {
+                match self.severity.to_int().unwrap().cmp(&other.severity.to_int().unwrap()) {
+                    std::cmp::Ordering::Equal => self.id.cmp(&other.id),
+                    not_equal => not_equal
+                }
+            },
+            not_equal => not_equal
+        }
     }
 }
 
@@ -214,15 +215,6 @@ impl std::cmp::PartialOrd for Sign {
         Some(self.cmp(other))
     }
 }
-
-impl std::cmp::PartialEq for Sign {
-    fn eq(&self, other: &Self) -> bool {
-        // Dirty way to check if sign has changed.
-        self.text == other.text && self.severity == other.severity
-    }
-}
-
-impl std::cmp::Eq for Sign {}
 
 use std::hash::{Hash, Hasher};
 impl Hash for Sign {
