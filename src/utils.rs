@@ -299,7 +299,7 @@ pub fn get_command_update_signs(signs_prev: &[Sign], signs: &[Sign], filename: &
             }
             diff::Result::Both(sign, _) => {
                 cmd += &get_command_delete_sign(sign, filename);
-                cmd += &get_command_delete_sign(sign, filename);
+                cmd += &get_command_add_sign(sign, filename);
             },
         }
     }
