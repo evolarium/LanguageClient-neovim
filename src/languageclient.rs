@@ -625,14 +625,6 @@ impl ILanguageClient for Arc<Mutex<State>> {
         })?;
 
         // Signs.
-        let texts = self.get(|state| {
-            let text_document = state
-                .text_documents
-                .get(filename)
-                .ok_or_else(|| format_err!("TextDocumentItem not found! filename: {}", filename))?;
-            Ok(text_document.text.clone())
-        })?;
-        let texts: Vec<&str> = texts.split('\n').collect();
         let mut signs: Vec<_> = diagnostics
             .iter()
             .map(|dn| {
